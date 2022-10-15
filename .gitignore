@@ -1,0 +1,16 @@
+# Environment
+# python venv
+log42/
+
+
+# Byte-compiled
+__pycache__/
+
+# something My
+python-collect
+firefox-bookmark.txt
+单词
+
+# .log
+asa5550.log
+
