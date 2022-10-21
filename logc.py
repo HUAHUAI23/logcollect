@@ -1,5 +1,4 @@
 import logging
-from os import pwrite
 import socketserver
 from grokkk import compile, outputtt
 from datetime import datetime
@@ -55,20 +54,21 @@ def dataParse(qdata, qdataParsed, testDict):
     while True:
         if not qdata.empty():
             data = qdata.get(True)
-            # TODO 资产没找到解析模板，返回一个默认值
-            # TODO try 记录没找到的日志
-            pa = testDict[data[1]]
+            # NOTE 资产没找到解析模板，返回一个默认值 {}
+            pa = testDict.get(data[1], {})
+            pattern = "nopattern"
+            # TODO try
             for keyworld, pat in pa.items():
                 if keyworld in data[0]:
                     pattern = pat
                     break
-                pattern = "nopattern"
             if pattern == "nopattern":
                 dataParsed = {'raw': data[0], 'timestamp': datetime.now()}
                 qdataParsed.put(
                     dataParsed)  # write raw data to qdataParsed queue
             else:
                 # use my gork
+                # TODO try
                 patternCompiled = compile(pattern)
                 dataParsed = outputtt(patternCompiled, data[0])
                 dataParsed["timestamp"] = datetime.now()
@@ -89,11 +89,11 @@ def writeEs(qdataParsed):
     while True:
         if not qdataParsed.empty():
             dataParsed = qdataParsed.get(True)
-            # logging.info(str(dataParsed))
-            # print(dataParsed)
+            logging.info(str(dataParsed))
+            print(dataParsed)
             # TODO try capture error
             # TODO es bulk insert
-            resp = client.index(index="logtest6", document=dataParsed)
+            # resp = client.index(index="logtest6", document=dataParsed)
 
 
 if __name__ == "__main__":
