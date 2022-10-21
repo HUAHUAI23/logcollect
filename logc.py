@@ -1,6 +1,7 @@
 import logging
+from os import pwrite
 import socketserver
-import grokkk
+from grokkk import compile, outputtt
 from datetime import datetime
 from elasticsearch import Elasticsearch
 from multiprocessing import Process, Queue
@@ -15,10 +16,10 @@ logging.basicConfig(
 )
 # PATTERN = "%{TEMP:temp} - root - %{WORD:level} - %{WORD:message}"
 PATTERN = "%{TEMP:temp} - root - %{WORD:level} - %{TEMP:temp}"
-testDict = {"172.18.160.1": {"sss": PATTERN, "uuu": PATTERN, "fff": PATTERN}}
+testDict = {"172.21.224.1": {"sss": PATTERN, "uuu": PATTERN, "fff": PATTERN}}
 
 
-def logcollect(q, testDict):
+def logcollect(qdata):
     """
     docstring
     """
@@ -27,25 +28,17 @@ def logcollect(q, testDict):
 
         def handle(self):
             # data = bytes.decode(self.request[0].strip())
-            data = bytes.decode(self.request[0].rstrip(b'\x00'))
-            pa = testDict[self.client_address[0]]
-            for keyworld, pattern in pa.items():
-                if keyworld in str(data):
-                    # use my gork
-                    patterCompiled = grokkk.compile(pattern)
-                    doc = grokkk.outputtt(patterCompiled, str(data))
-                    doc["timestamp"] = datetime.now()
-                    # print(doc)
-                    # write to ES   write to queen
-                    q.put(doc)
-                    # after a function is executed the variables within the function are aotomactically deleted,except for closures
-                    # del data
-                    # del pa
-                    # del patterCompiled
-                    # del doc
-                    # del keyworld
-                    # del pattern
-                    break
+            # format ['str',ip]
+            data = [
+                bytes.decode(self.request[0].rstrip(b'\x00')),
+                self.client_address[0]
+            ]
+
+            # print(data)
+            # write to data queue
+            qdata.put(data)
+            # after a function is executed the variables within the function are aotomactically deleted,except for closures
+            # del data
 
     try:
         HOST, PORT = "0.0.0.0", 2333
@@ -55,7 +48,35 @@ def logcollect(q, testDict):
         raise
 
 
-def writeEs(q):
+def dataParse(qdata, qdataParsed, testDict):
+    """
+    docstring
+    """
+    while True:
+        if not qdata.empty():
+            data = qdata.get(True)
+            # TODO 资产没找到解析模板，返回一个默认值
+            # TODO try 记录没找到的日志
+            pa = testDict[data[1]]
+            for keyworld, pat in pa.items():
+                if keyworld in data[0]:
+                    pattern = pat
+                    break
+                pattern = "nopattern"
+            if pattern == "nopattern":
+                dataParsed = {'raw': data[0], 'timestamp': datetime.now()}
+                qdataParsed.put(
+                    dataParsed)  # write raw data to qdataParsed queue
+            else:
+                # use my gork
+                patternCompiled = compile(pattern)
+                dataParsed = outputtt(patternCompiled, data[0])
+                dataParsed["timestamp"] = datetime.now()
+                dataParsed["raw"] = data[0]
+                qdataParsed.put(dataParsed)
+
+
+def writeEs(qdataParsed):
     """
     docstring
     """
@@ -64,29 +85,36 @@ def writeEs(q):
         basic_auth=("elastic", "123456"),
         ssl_assert_fingerprint=
         "b6e3e9649408c78ee13d6472a041b4e068574bdeaaa43d6947a33b7f7349a07c")
+
     while True:
-        if not q.empty():
-            doc = q.get(True)
-            # logging.info(str(doc))
-            # print(doc)
+        if not qdataParsed.empty():
+            dataParsed = qdataParsed.get(True)
+            # logging.info(str(dataParsed))
+            # print(dataParsed)
             # TODO try capture error
-            resp = client.index(index="logtest5", document=doc)
+            # TODO es bulk insert
+            resp = client.index(index="logtest6", document=dataParsed)
 
 
 if __name__ == "__main__":
     print('start...')
-    q = Queue()
+    qdata = Queue()
+    qdataParsed = Queue()
     #父进程的queue传递给子进程
-    pw = Process(target=logcollect, args=(
-        q,
+    plogc = Process(target=logcollect, args=(qdata, ))
+    pparse = Process(target=dataParse, args=(
+        qdata,
+        qdataParsed,
         testDict,
     ))
-    pr = Process(target=writeEs, args=(q, ))
+    pwriteEs = Process(target=writeEs, args=(qdataParsed, ))
 
-    pw.start()
-    pr.start()
-    pr.join()
-    pw.join()
+    plogc.start()
+    pparse.start()
+    pwriteEs.start()
+    plogc.join()
+    pparse.join()
+    pwriteEs.join()
 
     # except KeyboardInterrupt:
     #     print("Crtl+C Pressed. Shutting down.")
