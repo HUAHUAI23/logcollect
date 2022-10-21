@@ -6,11 +6,12 @@ log42/
 # Byte-compiled
 __pycache__/
 
-# something My
+# something temp
 python-collect
-firefox-bookmark.txt
-单词
+temp/
+ref-doc-learn/
+
 
 # .log
-asa5550.log
+logfiles/
 
