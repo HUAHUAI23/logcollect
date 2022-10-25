@@ -1,8 +1,8 @@
 import logging
 import socketserver
-from grokkk import compile, outputtt
+from gork import Grok
 from datetime import datetime
-from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch, helpers
 from multiprocessing import Process, Queue
 
 LOG_FILE = "./logfiles/asa5550.log"
@@ -14,8 +14,13 @@ logging.basicConfig(
     filemode="a",
 )
 # PATTERN = "%{TEMP:temp} - root - %{WORD:level} - %{WORD:message}"
-PATTERN = "%{TEMP:temp} - root - %{WORD:level} - %{TEMP:temp}"
-testDict = {"172.25.64.1": {"sss": PATTERN, "uuu": PATTERN, "fff": PATTERN}}
+testDict = {
+    "172.25.64.1": [
+        "%{SYSLOG5424LINE}",
+        '%{SYSLOG5424PRI}%{MYDATE:mydate} - %{HOSTNAME:syslog5424_host} - %{LOGLEVEL:loglevel} - %{GREEDYDATA:syslog5424_msg}'
+    ],
+    "127.0.0.1": ["%{SYSLOG5424LINE}"]
+}
 
 
 def logcollect(qdata):
@@ -51,28 +56,38 @@ def dataParse(qdata, qdataParsed, testDict):
     """
     docstring
     """
+    assetgrok = {}
+    for asset, pats in testDict.items():
+        assetgrok[asset] = Grok(
+            pats[0],
+            custom_patterns={
+                'ID': '%{WORD}-%{INT}',
+                'DATE_CN': '%{YEAR}[/-]%{MONTHNUM}[/-]%{MONTHDAY}',
+                'MYDATE': "%{DATE_CN} %{TIME}"
+            },
+            custom_patterns_dir='/home/i42/pro/python/pygrok/pygrok/patterns')
+        for pat in pats:
+            assetgrok[asset].add_search_pattern(pat)
     while True:
         if not qdata.empty():
             data = qdata.get(True)
-            # NOTE 资产没找到解析模板，返回一个默认值 {}
-            pa = testDict.get(data[1], {})
-            pattern = "nopattern"
-            # TODO try
-            for keyworld, pat in pa.items():
-                if keyworld in data[0]:
-                    pattern = pat
-                    break
-            if pattern == "nopattern":
-                dataParsed = {'raw': data[0], 'timestamp': datetime.now()}
+            # NOTE 没有找到资产的grok 返回None
+            grok = assetgrok.get(data[1], None)
+            if grok == None:
+                dataParsed = {
+                    'pckSrcIp': data[1],
+                    'raw': data[0],
+                    'timestamp': datetime.now()
+                }
                 qdataParsed.put(
                     dataParsed)  # write raw data to qdataParsed queue
             else:
-                # use my gork
-                # TODO try
-                patternCompiled = compile(pattern)
-                dataParsed = outputtt(patternCompiled, data[0])
+                dataParsed = grok.match(data[0])
+                if dataParsed == None:
+                    dataParsed = {}
                 dataParsed["timestamp"] = datetime.now()
                 dataParsed["raw"] = data[0]
+                dataParsed['pckSrcIp'] = data[1]
                 qdataParsed.put(dataParsed)
 
 
@@ -80,20 +95,27 @@ def writeEs(qdataParsed):
     """
     docstring
     """
-    client = Elasticsearch(
+    esclient = Elasticsearch(
         "https://192.168.1.42:9200",
         basic_auth=("elastic", "123456"),
         ssl_assert_fingerprint=
         "b6e3e9649408c78ee13d6472a041b4e068574bdeaaa43d6947a33b7f7349a07c")
 
-    while True:
-        if not qdataParsed.empty():
-            dataParsed = qdataParsed.get(True)
-            # logging.info(str(dataParsed))
-            # print(dataParsed)
-            # TODO try capture error
-            # TODO es bulk insert
-            # resp = client.index(index="logtest7", document=dataParsed)
+    # 生成器函数
+    def es_generator():
+        # NOTE 未设置迭代结束条件，将会是无穷迭代
+        while True:
+            if not qdataParsed.empty():
+                dataParsed = qdataParsed.get(True)
+                # print(dataParsed)
+                # logging.info(str(dataParsed))
+                yield {"_index": "logtest1", "_source": dataParsed}
+
+    # NOTE 默认bulk为500，可通过参数 chunk_size 修改，具体参考:
+    # https://elasticsearch-py.readthedocs.io/en/v8.4.3/helpers.html
+    # https://www.elastic.co/guide/en/elasticsearch/client/python-api/current/client-helpers.html
+    # TODO try capture error
+    helpers.bulk(esclient, actions=es_generator())
 
 
 if __name__ == "__main__":
